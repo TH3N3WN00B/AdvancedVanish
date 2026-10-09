@@ -23,7 +23,7 @@ class DiscordSrvHook : IHook {
 
     @EventHandler
     private fun onVanish(event: PlayerVanishEvent) {
-        event.player.setMetadata("vanished", FixedMetadataValue(AdvancedVanish.instance!!, true))
+        event.player.setMetadata("vanished", FixedMetadataValue(AdvancedVanish.plugin, true))
 
         if (!event.onJoin && Config.getValueOrDefault("join-leave-messages.fake-leave-message-on-vanish.enable", false)) {
             val message = Config.getValueOrDefault(
@@ -39,7 +39,7 @@ class DiscordSrvHook : IHook {
 
     @EventHandler
     private fun onUnVanish(event: PlayerUnVanishEvent) {
-        event.player.removeMetadata("vanished", AdvancedVanish.instance!!)
+        event.player.removeMetadata("vanished", AdvancedVanish.plugin)
 
         if (!event.onLeave && Config.getValueOrDefault("join-leave-messages.fake-join-message-on-unvanish.enable", false)) {
             val message = Config.getValueOrDefault(

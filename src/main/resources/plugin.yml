@@ -3,15 +3,40 @@ description: ${project.description}
 author: quantiom
 version: ${project.version}
 main: ${project.groupId}.${project.artifactId}.${project.name}Plugin
-softdepend: [LuckPerms, PlaceholderAPI, GroupManager, PermissionsEx, bPermissions, DiscordSRV, Dynmap, squaremap, LibsDisguises, PlayerParticles, Essentials, PlaceholderAPI, ProtocolLib]
-api-version: 1.20
-commands:
-  vanish:
-    description: The main vanish command.
-    aliases: [v, advancedvanish]
-    usage: /vanish
+softdepend: [LuckPerms, PlaceholderAPI, DiscordSRV, Dynmap, squaremap, LibsDisguises, PlayerParticles, Essentials, packetevents]
+api-version: '26.2'
 
 libraries:
-- 'co.aikar:acf-paper:0.5.1-SNAPSHOT'
-- 'redis.clients:jedis:jar:5.1.0'
-- 'org.jetbrains.kotlin:kotlin-stdlib:jar:1.9.22'
+- 'org.incendo:cloud-paper:2.0.1'
+- 'redis.clients:jedis:jar:8.0.2'
+- 'org.jetbrains.kotlin:kotlin-stdlib:jar:2.4.21'
+
+# Default nodes; every node can be changed in the "permissions" section of config.yml
+permissions:
+  advancedvanish.vanish:
+    description: Toggle your own vanish
+    default: op
+  advancedvanish.join-vanished:
+    description: Join the server already vanished
+    default: false
+  advancedvanish.keep-fly:
+    description: Keep flight when leaving vanish
+    default: false
+  advancedvanish.version-command:
+    default: op
+  advancedvanish.help-command:
+    default: op
+  advancedvanish.reload-config-command:
+    default: op
+  advancedvanish.interact-command:
+    default: op
+  advancedvanish.priority-command:
+    default: op
+  advancedvanish.list-command:
+    default: op
+  advancedvanish.status-command:
+    default: op
+  advancedvanish.toggle-other-command:
+    default: op
+  advancedvanish.set-other-command:
+    default: op

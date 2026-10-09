@@ -106,7 +106,7 @@ join-leave-messages:
 hooks:
   # Hides players from Essentials commands such as: /list, /whois, etc...
   essentials: true
-  # Requires ProtocolLib, removes vanished players from the server list (player count and players)
+  # Requires PacketEvents, removes vanished players from the server list (player count and players)
   server-list: true
   # Requires PlaceholderAPI, adds multiple placeholders which are configurable
   # in the placeholders section of this config

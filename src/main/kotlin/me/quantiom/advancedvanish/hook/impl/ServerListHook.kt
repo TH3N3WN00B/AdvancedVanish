@@ -1,36 +1,61 @@
 package me.quantiom.advancedvanish.hook.impl
 
-import com.comphenix.protocol.PacketType
-import com.comphenix.protocol.ProtocolLibrary
-import com.comphenix.protocol.events.PacketAdapter
-import com.comphenix.protocol.events.PacketEvent
-import com.comphenix.protocol.wrappers.WrappedServerPing
-import me.quantiom.advancedvanish.AdvancedVanish
-import me.quantiom.advancedvanish.hook.IHook
+import com.github.retrooper.packetevents.PacketEvents
+import com.github.retrooper.packetevents.event.SimplePacketListenerAbstract
+import com.github.retrooper.packetevents.event.simple.PacketStatusSendEvent
+import com.github.retrooper.packetevents.protocol.packettype.PacketType
+import com.github.retrooper.packetevents.wrapper.status.server.WrapperStatusServerResponse
+import com.google.gson.JsonArray
 import me.quantiom.advancedvanish.util.AdvancedVanishAPI
+import me.quantiom.advancedvanish.hook.IHook
 
 class ServerListHook : IHook {
-    private val packetListener = object : PacketAdapter(
-        params(
-            AdvancedVanish.instance,
-            PacketType.Status.Server.OUT_SERVER_INFO
-        ).optionAsync()
-    ) {
-        override fun onPacketSending(event: PacketEvent?) {
-            val ping = event!!.packet.serverPings.read(0) as WrappedServerPing
+    private val packetListener = object : SimplePacketListenerAbstract() {
+        override fun onPacketStatusSend(event: PacketStatusSendEvent) {
+            if (event.packetType != PacketType.Status.Server.RESPONSE) return
 
-            ping.playersOnline -= AdvancedVanishAPI.vanishedPlayers.size
-            ping.setPlayers(ping.players.filter { AdvancedVanishAPI.vanishedPlayers.find { vUUID -> vUUID == it.uuid } == null })
+            val wrapper = WrapperStatusServerResponse(event)
+            // never let a malformed response from another plugin break (or crash) the ping handling
+            try {
+                val component = wrapper.component ?: return
+                val players = component.getAsJsonObject("players") ?: return
+
+                val vanished = AdvancedVanishAPI.vanishedPlayers
+                if (vanished.isEmpty()) return
+
+                // adjust online player count
+                val online = players.get("online")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+                players.addProperty("online", (online - vanished.size).coerceAtLeast(0))
+
+                // remove vanished players from the player sample list
+                val vanishedIds = vanished.mapTo(HashSet(vanished.size * 2)) { it.toString() }
+
+                players.getAsJsonArray("sample")?.let { sample ->
+                    val newArray = JsonArray()
+
+                    sample.forEach { element ->
+                        val id = element.takeIf { it.isJsonObject }?.asJsonObject?.get("id")?.takeIf { it.isJsonPrimitive }?.asString
+                        if (id.isNullOrEmpty() || id !in vanishedIds) newArray.add(element)
+                    }
+
+                    players.add("sample", newArray)
+                }
+
+                wrapper.component = component
+                event.markForReEncode(true)
+            } catch (_: RuntimeException) {
+                // leave the response untouched
+            }
         }
     }
 
     override fun getID() = "ServerList"
 
     override fun onEnable() {
-        ProtocolLibrary.getProtocolManager().addPacketListener(this.packetListener)
+        PacketEvents.getAPI().eventManager.registerListener(packetListener)
     }
 
     override fun onDisable() {
-        ProtocolLibrary.getProtocolManager().removePacketListener(this.packetListener)
+        PacketEvents.getAPI().eventManager.unregisterListener(packetListener)
     }
 }

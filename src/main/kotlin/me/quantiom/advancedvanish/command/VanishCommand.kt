@@ -2,9 +2,6 @@
 
 package me.quantiom.advancedvanish.command
 
-import co.aikar.commands.BaseCommand
-import co.aikar.commands.annotation.*
-import co.aikar.commands.bukkit.contexts.OnlinePlayer
 import me.quantiom.advancedvanish.AdvancedVanish
 import me.quantiom.advancedvanish.config.Config
 import me.quantiom.advancedvanish.hook.HooksManager
@@ -14,9 +11,21 @@ import me.quantiom.advancedvanish.util.*
 import org.bukkit.Bukkit
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
+import org.incendo.cloud.context.CommandContext
+import org.incendo.cloud.context.CommandInput
+import org.incendo.cloud.exception.CommandExecutionException
+import org.incendo.cloud.exception.InvalidSyntaxException
+import org.incendo.cloud.exception.NoPermissionException
+import org.incendo.cloud.exception.NoSuchCommandException
+import org.incendo.cloud.exception.handling.ExceptionHandler
+import org.incendo.cloud.paper.LegacyPaperCommandManager
+import org.incendo.cloud.parser.standard.StringParser
+import org.incendo.cloud.permission.PredicatePermission
+import org.incendo.cloud.suggestion.BlockingSuggestionProvider
+import org.incendo.cloud.suggestion.SuggestionProvider
+import java.util.logging.Level
 
-@CommandAlias("vanish|advancedvanish|v")
-object VanishCommand : BaseCommand() {
+object VanishCommand {
     private val HELP_MESSAGE = listOf(
         "",
         "<red><strikethrough>----------</strikethrough><bold> AdvancedVanish </bold><red><strikethrough>----------",
@@ -33,158 +42,260 @@ object VanishCommand : BaseCommand() {
         ""
     )
 
-    @Default
-    private fun onVanishCommand(player: Player) {
-        if (!permissionCheck(player, "permissions.vanish", "advancedvanish.vanish")) return
-
-        if (player.isVanished()) {
-            AdvancedVanishAPI.unVanishPlayer(player)
-            player.sendConfigMessage("vanish-off")
-        } else {
-            AdvancedVanishAPI.vanishPlayer(player)
-            player.sendConfigMessage("vanish-on")
-        }
+    private class OnlinePlayersProvider : BlockingSuggestionProvider.Strings<CommandSender> {
+        override fun stringSuggestions(context: CommandContext<CommandSender>, input: CommandInput): Iterable<String> =
+            Bukkit.getOnlinePlayers().map(Player::getName)
     }
 
-    @Subcommand("version")
-    private fun onVersionCommand(sender: CommandSender) {
-        if (!permissionCheck(sender, "permissions.version-command", "advancedvanish.version-command")) return
+    fun register(commandManager: LegacyPaperCommandManager<CommandSender>) {
+        registerExceptionHandlers(commandManager)
 
-        sender.sendConfigMessage("version-command",
-            "%version%" to "v${AdvancedVanish.instance!!.pluginMeta.version}"
+        val root = commandManager.commandBuilder("vanish", "v", "advancedvanish")
+
+        commandManager.command(root.permission(configPermission("permissions.vanish", "advancedvanish.vanish"))
+            .handler { ctx ->
+            val sender = ctx.sender()
+            if (sender !is Player) {
+                sender.sendPlayersOnlyMessage()
+                return@handler
+            }
+
+            if (sender.isVanished()) {
+                AdvancedVanishAPI.unVanishPlayer(sender)
+                sender.sendConfigMessage("vanish-off")
+            } else {
+                AdvancedVanishAPI.vanishPlayer(sender)
+                sender.sendConfigMessage("vanish-on")
+            }
+        })
+
+        commandManager.command(root.literal("version").permission(configPermission("permissions.version-command", "advancedvanish.version-command"))
+            .handler { ctx ->
+            val sender = ctx.sender()
+
+            sender.sendConfigMessage("version-command", "%version%" to "v${AdvancedVanish.plugin.pluginMeta.version}")
+        })
+
+        commandManager.command(root.literal("reload", "reloadconfig").permission(configPermission("permissions.reload-config-command", "advancedvanish.reload-config-command"))
+            .handler { ctx ->
+            val sender = ctx.sender()
+
+            Config.reload().also { sender.sendConfigMessage("config-reloaded") }
+
+            HooksManager.reloadHooks()
+            PermissionsManager.setupPermissionsHandler()
+        })
+
+        commandManager.command(root.literal("interact").permission(configPermission("permissions.interact-command", "advancedvanish.interact-command"))
+            .handler { ctx ->
+            val sender = ctx.sender()
+            if (sender !is Player) {
+                sender.sendPlayersOnlyMessage()
+                return@handler
+            }
+
+            if (!sender.isVanished()) {
+                sender.sendConfigMessage("must-be-vanished-to-use-command")
+            } else if (VanishStateManager.interactEnabled.contains(sender.uniqueId)) {
+                VanishStateManager.interactEnabled.remove(sender.uniqueId)
+                sender.sendConfigMessage("vanish-interact-toggled", "%interact-status%" to "off")
+            } else {
+                VanishStateManager.interactEnabled.add(sender.uniqueId)
+                sender.sendConfigMessage("vanish-interact-toggled", "%interact-status%" to "on")
+            }
+        })
+
+        commandManager.command(root.literal("priority").permission(configPermission("permissions.priority-command", "advancedvanish.priority-command"))
+            .handler { ctx ->
+            val sender = ctx.sender()
+            if (sender !is Player) {
+                sender.sendPlayersOnlyMessage()
+                return@handler
+            }
+
+            if (PermissionsManager.handler == null) {
+                sender.sendConfigMessage("not-using-vanish-priority")
+            } else {
+                val priority = PermissionsManager.handler?.getVanishPriority(sender) ?: 0
+                sender.sendConfigMessage("vanish-priority", "%priority%" to priority.toString())
+            }
+        })
+
+        commandManager.command(root.literal("list").permission(configPermission("permissions.list-command", "advancedvanish.list-command"))
+            .handler { ctx ->
+            val sender = ctx.sender()
+
+            val players = AdvancedVanishAPI.vanishedPlayers.mapNotNull(Bukkit::getPlayer).joinToString(", ", transform = Player::getName)
+
+            sender.sendConfigMessage("vanished-list", "%vanished-players%" to players.ifEmpty { "None" })
+        })
+
+        commandManager.command(root.literal("status")
+            .required("player", StringParser.stringParser(), SuggestionProvider.blockingStrings(OnlinePlayersProvider()))
+            .permission(configPermission("permissions.status-command", "advancedvanish.status-command"))
+            .handler { ctx ->
+                val sender = ctx.sender()
+
+                val target = ctx.get<String>("player")
+                val targetPlayer = target.resolvePlayer()
+                if (targetPlayer == null) {
+                    sender.sendCommandHandlerMessage(
+                        "could-not-find-player",
+                        "Couldn't find a player by the name of <red>%search%<white>.",
+                        "%search%" to target.escapeUserInput()
+                    )
+                    return@handler
+                }
+
+                sender.sendConfigMessage("vanish-status-command",
+                    "%target-name%" to targetPlayer.name,
+                    "%vanish-status%" to if (targetPlayer.isVanished()) "on" else "off",
+                    "%vanish-status-word%" to if (targetPlayer.isVanished()) "vanished" else "not vanished"
+                )
+            })
+
+        commandManager.command(root.literal("set")
+            .required("player", StringParser.stringParser(), SuggestionProvider.blockingStrings(OnlinePlayersProvider()))
+            .required("status", StringParser.stringParser())
+            .permission(configPermission("permissions.set-other-command", "advancedvanish.set-other-command"))
+            .handler { ctx ->
+                val sender = ctx.sender()
+
+                val target = ctx.get<String>("player")
+                val targetPlayer = target.resolvePlayer()
+                if (targetPlayer == null) {
+                    sender.sendCommandHandlerMessage(
+                        "could-not-find-player",
+                        "Couldn't find a player by the name of <red>%search%<white>.",
+                        "%search%" to target.escapeUserInput()
+                    )
+                    return@handler
+                }
+
+                val toChange = when (ctx.get<String>("status").lowercase()) {
+                    "on", "true" -> true
+                    "off", "false" -> false
+                    else -> {
+                        sender.sendCommandHandlerMessage(
+                            "invalid-syntax",
+                            "Usage: %command% %syntax%",
+                            "%command%" to "/vanish",
+                            "%syntax%" to "set <player> <on/off>"
+                        )
+                        return@handler
+                    }
+                }
+                var sendAlready = false
+
+                if (targetPlayer.isVanished()) {
+                    if (toChange) {
+                        sendAlready = true
+                    } else {
+                        AdvancedVanishAPI.unVanishPlayer(targetPlayer)
+                    }
+                } else {
+                    if (!toChange) {
+                        sendAlready = true
+                    } else {
+                        AdvancedVanishAPI.vanishPlayer(targetPlayer)
+                    }
+                }
+
+                if (sendAlready) {
+                    sender.sendConfigMessage("vanish-set-other-command-already",
+                        "%target-name%" to targetPlayer.name,
+                        "%vanish-status%" to if (targetPlayer.isVanished()) "on" else "off",
+                        "%vanish-status-word%" to if (targetPlayer.isVanished()) "vanished" else "not vanished"
+                    )
+                } else {
+                    sender.sendConfigMessage("vanish-set-other-command",
+                        "%target-name%" to targetPlayer.name,
+                        "%vanish-status%" to if (targetPlayer.isVanished()) "on" else "off",
+                        "%vanish-status-word%" to if (targetPlayer.isVanished()) "vanished" else "not vanished"
+                    )
+                }
+            })
+
+        commandManager.command(root.literal("toggle")
+            .required("player", StringParser.stringParser(), SuggestionProvider.blockingStrings(OnlinePlayersProvider()))
+            .permission(configPermission("permissions.toggle-other-command", "advancedvanish.toggle-other-command"))
+            .handler { ctx ->
+                val sender = ctx.sender()
+
+                val target = ctx.get<String>("player")
+                val targetPlayer = target.resolvePlayer()
+                if (targetPlayer == null) {
+                    sender.sendCommandHandlerMessage(
+                        "could-not-find-player",
+                        "Couldn't find a player by the name of <red>%search%<white>.",
+                        "%search%" to target.escapeUserInput()
+                    )
+                    return@handler
+                }
+
+                if (targetPlayer.isVanished()) {
+                    AdvancedVanishAPI.unVanishPlayer(targetPlayer)
+                } else {
+                    AdvancedVanishAPI.vanishPlayer(targetPlayer)
+                }
+
+                sender.sendConfigMessage("vanish-set-other-command",
+                    "%target-name%" to targetPlayer.name,
+                    "%vanish-status%" to if (targetPlayer.isVanished()) "on" else "off",
+                    "%vanish-status-word%" to if (targetPlayer.isVanished()) "vanished" else "not vanished"
+                )
+            })
+
+        commandManager.command(root.literal("help").permission(configPermission("permissions.help-command", "advancedvanish.help-command"))
+            .handler { ctx ->
+            val sender = ctx.sender()
+
+            this.HELP_MESSAGE.forEach { sender.sendMessage(it.color()) }
+        })
+    }
+
+    private fun registerExceptionHandlers(commandManager: LegacyPaperCommandManager<CommandSender>) {
+        val exceptionController = commandManager.exceptionController()
+
+        exceptionController.registerHandler(
+            NoSuchCommandException::class.java,
+            ExceptionHandler<CommandSender, NoSuchCommandException> { context ->
+                context.context().sender().sendCommandHandlerMessage("unknown-command", "<red>Invalid arguments.")
+            }
+        )
+
+        exceptionController.registerHandler(
+            InvalidSyntaxException::class.java,
+            ExceptionHandler<CommandSender, InvalidSyntaxException> { context ->
+                context.context().sender().sendCommandHandlerMessage(
+                    "invalid-syntax",
+                    "Usage: %command% %syntax%",
+                    "%command%" to "/vanish",
+                    "%syntax%" to context.exception().correctSyntax()
+                )
+            }
+        )
+
+        exceptionController.registerHandler(
+            NoPermissionException::class.java,
+            ExceptionHandler<CommandSender, NoPermissionException> { context ->
+                context.context().sender().sendConfigMessage("no-permission")
+            }
+        )
+
+        exceptionController.registerHandler(
+            CommandExecutionException::class.java,
+            ExceptionHandler<CommandSender, CommandExecutionException> { context ->
+                AdvancedVanish.instance?.logger?.log(Level.WARNING, "Error while executing command", context.exception().cause ?: context.exception())
+                context.context().sender().sendCommandHandlerMessage("error-performing-command", "<red>There was an error performing this command.")
+            }
         )
     }
 
-    @Subcommand("reload|reloadconfig")
-    private fun onReloadCommand(sender: CommandSender) {
-        if (!permissionCheck(sender, "permissions.reload-config-command", "advancedvanish.reload-config-command")) return
+    private fun CommandSender.sendPlayersOnlyMessage() =
+        this.sendMessage("<red>You must be a player to use this command.".color())
 
-        Config.reload().also { sender.sendConfigMessage("config-reloaded") }
-
-        HooksManager.reloadHooks()
-        PermissionsManager.setupPermissionsHandler()
-    }
-
-    @Subcommand("interact")
-    private fun onInteractCommand(player: Player) {
-        if (!permissionCheck(player, "permissions.interact-command", "advancedvanish.interact-command")) return
-
-        if (!player.isVanished()) {
-            player.sendConfigMessage("must-be-vanished-to-use-command")
-        } else {
-            if (VanishStateManager.interactEnabled.contains(player.uniqueId)) {
-                VanishStateManager.interactEnabled.remove(player.uniqueId)
-                player.sendConfigMessage("vanish-interact-toggled", "%interact-status%" to "off")
-            } else {
-                VanishStateManager.interactEnabled.add(player.uniqueId)
-                player.sendConfigMessage("vanish-interact-toggled", "%interact-status%" to "on")
-            }
-        }
-    }
-
-    @Subcommand("priority")
-    private fun onPriorityCommand(player: Player) {
-        if (!permissionCheck(player, "permissions.priority-command", "advancedvanish.priority-command")) return
-
-        if (PermissionsManager.handler == null) {
-            player.sendConfigMessage("not-using-vanish-priority")
-        } else {
-            player.sendConfigMessage("vanish-priority", "%priority%" to PermissionsManager.handler!!.getVanishPriority(player).toString())
-        }
-    }
-
-    @Subcommand("list")
-    private fun onListCommand(player: Player) {
-        if (!permissionCheck(player, "permissions.list-command", "advancedvanish.list-command")) return
-
-        val players = AdvancedVanishAPI.vanishedPlayers.map(Bukkit::getPlayer).map { it!! }.joinToString(", ", transform = Player::getName)
-
-        player.sendConfigMessage("vanished-list", "%vanished-players%" to players.ifEmpty { "None" })
-    }
-
-    @Subcommand("status")
-    @Syntax("<player>")
-    @CommandCompletion("@players")
-    private fun onStatusCommand(sender: CommandSender, target: OnlinePlayer) {
-        if (!permissionCheck(sender, "permissions.status-command", "advancedvanish.status-command")) return
-
-        sender.sendConfigMessage("vanish-status-command",
-            "%target-name%" to target.player.name,
-            "%vanish-status%" to if (target.player.isVanished()) "on" else "off",
-            "%vanish-status-word%" to if (target.player.isVanished()) "vanished" else "not vanished"
-        )
-    }
-
-    @Subcommand("set")
-    @Syntax("<player> <on/off>")
-    @CommandCompletion("@players")
-    private fun onSetCommand(sender: CommandSender, target: OnlinePlayer, status: String) {
-        if (!permissionCheck(sender, "permissions.set-other-command", "advancedvanish.set-other-command")) return
-
-        val toChange = status.lowercase() == "on" || status.lowercase() == "true"
-        var sendAlready = false
-
-        if (target.player.isVanished()) {
-            if (toChange) {
-                sendAlready = true
-            } else {
-                AdvancedVanishAPI.unVanishPlayer(target.player)
-            }
-        } else {
-            if (!toChange) {
-                sendAlready = true
-            } else {
-                AdvancedVanishAPI.vanishPlayer(target.player)
-            }
-        }
-
-        if (sendAlready) {
-            sender.sendConfigMessage("vanish-set-other-command-already",
-                "%target-name%" to target.player.name,
-                "%vanish-status%" to if (target.player.isVanished()) "on" else "off",
-                "%vanish-status-word%" to if (target.player.isVanished()) "vanished" else "not vanished"
-            )
-        } else {
-            sender.sendConfigMessage("vanish-set-other-command",
-                "%target-name%" to target.player.name,
-                "%vanish-status%" to if (target.player.isVanished()) "on" else "off",
-                "%vanish-status-word%" to if (target.player.isVanished()) "vanished" else "not vanished"
-            )
-        }
-    }
-
-    @Subcommand("toggle")
-    @Syntax("<player>")
-    @CommandCompletion("@players")
-    private fun onToggleCommand(sender: CommandSender, target: OnlinePlayer) {
-        if (!permissionCheck(sender, "permissions.toggle-other-command", "advancedvanish.toggle-other-command")) return
-
-        if (target.player.isVanished()) {
-            AdvancedVanishAPI.unVanishPlayer(target.player)
-        } else {
-            AdvancedVanishAPI.vanishPlayer(target.player)
-        }
-
-        sender.sendConfigMessage("vanish-set-other-command",
-            "%target-name%" to target.player.name,
-            "%vanish-status%" to if (target.player.isVanished()) "on" else "off",
-            "%vanish-status-word%" to if (target.player.isVanished()) "vanished" else "not vanished"
-        )
-    }
-
-    @HelpCommand
-    private fun onHelp(sender: CommandSender) {
-        if (!permissionCheck(sender, "permissions.help-command", "advancedvanish.help-command")) return
-
-        this.HELP_MESSAGE.forEach { sender.sendMessage(it.color()) }
-    }
-
-    private fun permissionCheck(sender: CommandSender, key: String, default: String): Boolean {
-        if (!sender.hasPermission(Config.getValueOrDefault(key, default))) {
-            sender.sendConfigMessage("no-permission")
-            return false
-        }
-
-        return true
-    }
+    /** A permission whose node is read from the config every time it is checked, so reloads apply immediately. */
+    private fun configPermission(key: String, default: String): PredicatePermission<CommandSender> =
+        PredicatePermission.of { sender -> sender.hasPermission(Config.getValueOrDefault(key, default)) }
 }

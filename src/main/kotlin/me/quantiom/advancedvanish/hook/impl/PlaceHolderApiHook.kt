@@ -15,7 +15,7 @@ class PlaceHolderApiHook : IHook {
     private val playerCountPlaceholder = Config.getValueOrDefault("placeholders.player-count", "player_count")
 
     private val expansion: PlaceholderExpansion = object : PlaceholderExpansion() {
-        override fun getVersion() = AdvancedVanish.instance!!.description.version
+        override fun getVersion() = AdvancedVanish.plugin.pluginMeta.version
         override fun getAuthor() = "quantiom"
         override fun getIdentifier() = Config.getValueOrDefault("placeholders.identifier", "advancedvanish")
         override fun persist() = true
@@ -25,8 +25,7 @@ class PlaceHolderApiHook : IHook {
             return when (params.lowercase()) {
                 isVanishedPlaceholder -> if (player?.isVanished() == true) "Yes" else "No"
                 vanishedPlayersPlaceholder -> AdvancedVanishAPI.vanishedPlayers
-                        .map(Bukkit::getPlayer)
-                        .map { it!! }
+                        .mapNotNull(Bukkit::getPlayer)
                         .joinToString(", ", transform = Player::getName)
                         .ifEmpty { "None" }
                 playerCountPlaceholder -> (Bukkit.getOnlinePlayers().size - AdvancedVanishAPI.vanishedPlayers.size).toString()

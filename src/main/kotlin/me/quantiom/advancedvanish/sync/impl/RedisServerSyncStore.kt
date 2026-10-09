@@ -3,66 +3,77 @@ package me.quantiom.advancedvanish.sync.impl
 import me.quantiom.advancedvanish.AdvancedVanish
 import me.quantiom.advancedvanish.config.Config
 import me.quantiom.advancedvanish.sync.IServerSyncStore
-import org.bukkit.Bukkit
+import redis.clients.jedis.DefaultJedisClientConfig
+import redis.clients.jedis.HostAndPort
 import redis.clients.jedis.JedisPool
+import redis.clients.jedis.JedisPoolConfig
+import java.time.Duration
 import java.util.*
 import java.util.logging.Level
 
 object RedisServerSyncStore : IServerSyncStore {
+    private const val TIMEOUT_MILLIS = 3000
+    private const val KEY_TTL_SECONDS = 90L * 24 * 60 * 60
+
+    @Volatile
     private var pool: JedisPool? = null
 
     override fun setup(): Boolean {
-        this.pool = JedisPool(
-            Config.getValueOrDefault("cross-server-support.redis.ip", "127.0.0.1"),
-            Config.getValueOrDefault("cross-server-support.redis.port", 6379),
-            null,
-            Config.getValueOrDefault("cross-server-support.redis.auth", "").ifEmpty { null },
-        )
+        val host = Config.getValueOrDefault("cross-server-support.redis.ip", "127.0.0.1")
+        val port = Config.getValueOrDefault("cross-server-support.redis.port", 6379)
+
+        val clientConfig = DefaultJedisClientConfig.builder()
+            .password(Config.getValueOrDefault("cross-server-support.redis.auth", "").ifEmpty { null })
+            .connectionTimeoutMillis(TIMEOUT_MILLIS)
+            .socketTimeoutMillis(TIMEOUT_MILLIS)
+            .build()
+
+        val poolConfig = JedisPoolConfig().apply {
+            maxTotal = 8
+            maxIdle = 4
+            setMaxWait(Duration.ofMillis(TIMEOUT_MILLIS.toLong()))
+        }
+
+        val newPool = JedisPool(poolConfig, HostAndPort(host, port), clientConfig)
 
         try {
-            this.pool!!.resource?.get("test")
+            newPool.resource.use { it.ping() }
         } catch (e: Exception) {
-            AdvancedVanish.log(Level.SEVERE, "There was an error while attempting to make a connection with Redis: ")
-            e.printStackTrace()
+            AdvancedVanish.log(Level.SEVERE, "There was an error while attempting to make a connection with Redis: ${e.message}")
+            newPool.close()
             return false
         }
 
+        this.pool = newPool
         AdvancedVanish.log(Level.INFO, "Successfully connected to Redis.")
         return true
     }
 
     override fun close() {
         this.pool?.close()
+        this.pool = null
     }
 
     override fun get(key: UUID): Boolean {
-        var returnValue: String? = null
+        val pool = this.pool ?: return false
 
-        try {
-            this.pool?.resource?.let { resource ->
-                returnValue = resource.get(this.getPlayerKey(key))
-                resource.close()
-            }
+        return try {
+            pool.resource.use { it.get(this.getPlayerKey(key)) } == "true"
         } catch (e: Exception) {
-            AdvancedVanish.log(Level.SEVERE, "There was an error while attempting to make a connection with Redis: ")
-            e.printStackTrace()
+            AdvancedVanish.log(Level.SEVERE, "There was an error while reading from Redis: ${e.message}")
+            false
         }
-
-        return returnValue?.let { it == "true" } ?: false
     }
 
-    override fun setAsync(key: UUID, value: Boolean) {
-        Bukkit.getScheduler().runTaskAsynchronously(AdvancedVanish.instance!!, Runnable {
-            try {
-                this.pool?.resource?.let { resource ->
-                    resource.set(this.getPlayerKey(key), value.toString())
-                    resource.close()
-                }
-            } catch (e: Exception) {
-                AdvancedVanish.log(Level.SEVERE, "There was an error while attempting to make a connection with Redis: ")
-                e.printStackTrace()
-            }
-        })
+    override fun set(key: UUID, value: Boolean) {
+        val pool = this.pool ?: return
+
+        try {
+            // states expire so abandoned players do not accumulate in Redis forever
+            pool.resource.use { it.setex(this.getPlayerKey(key), KEY_TTL_SECONDS, value.toString()) }
+        } catch (e: Exception) {
+            AdvancedVanish.log(Level.SEVERE, "There was an error while writing to Redis: ${e.message}")
+        }
     }
 
     private fun getPlayerKey(uuid: UUID) = "advancedvanish-${uuid}"

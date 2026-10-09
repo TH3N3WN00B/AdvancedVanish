@@ -6,7 +6,7 @@ import me.quantiom.advancedvanish.event.PlayerUnVanishEvent
 import me.quantiom.advancedvanish.event.PlayerVanishEvent
 import me.quantiom.advancedvanish.hook.IHook
 import me.quantiom.advancedvanish.util.AdvancedVanishAPI
-import me.quantiom.advancedvanish.util.color
+import me.quantiom.advancedvanish.util.renderMessage
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -16,14 +16,14 @@ class ActionBarHook : IHook {
     private val updateTask: BukkitRunnable =
         object : BukkitRunnable() {
             override fun run() {
-                AdvancedVanishAPI.vanishedPlayers.map(Bukkit::getPlayer).map { it!! }.forEach(::sendActionBar)
+                AdvancedVanishAPI.vanishedPlayers.mapNotNull(Bukkit::getPlayer).forEach(::sendActionBar)
             }
         }
 
     override fun getID() = "ActionBar"
 
     override fun onEnable() {
-        this.updateTask.runTaskTimer(AdvancedVanish.instance!!, 0L, 30L)
+        this.updateTask.runTaskTimer(AdvancedVanish.plugin, 0L, 30L)
     }
 
     override fun onDisable() {
@@ -35,7 +35,7 @@ class ActionBarHook : IHook {
     }
 
     private fun sendActionBarStr(player: Player, str: String) {
-        player.sendActionBar(str.color())
+        player.sendActionBar(player.renderMessage(str))
     }
 
     @EventHandler

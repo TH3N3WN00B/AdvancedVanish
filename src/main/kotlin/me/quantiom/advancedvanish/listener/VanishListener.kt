@@ -1,5 +1,6 @@
 package me.quantiom.advancedvanish.listener
 
+import io.papermc.paper.event.player.AsyncChatEvent
 import me.quantiom.advancedvanish.config.Config
 import me.quantiom.advancedvanish.sync.ServerSyncManager
 import me.quantiom.advancedvanish.state.VanishStateManager
@@ -13,6 +14,10 @@ import org.bukkit.block.Chest
 import org.bukkit.block.ShulkerBox
 import org.bukkit.entity.Player
 import org.bukkit.event.Cancellable
+import org.bukkit.event.entity.EntityPickupItemEvent
+import org.bukkit.event.inventory.InventoryDragEvent
+import org.bukkit.inventory.Inventory
+import org.bukkit.inventory.InventoryHolder
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.block.Action
@@ -26,6 +31,13 @@ import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.player.*
 
 object VanishListener : Listener {
+    /** Marks the read-only container copies shown to vanished players, so they cannot be spoofed through a renamed block. */
+    private class SilentContainerHolder : InventoryHolder {
+        lateinit var backing: Inventory
+
+        override fun getInventory(): Inventory = backing
+    }
+
     @EventHandler
     private fun onJoin(event: PlayerJoinEvent) {
         val player = event.player
@@ -42,15 +54,15 @@ object VanishListener : Listener {
 
         var doVanish = false
 
+        val loginVanishState = ServerSyncManager.loginVanishStates.remove(player.uniqueId)
+
         if (player.hasPermission(vanishPermission)) {
-            if (ServerSyncManager.crossServerSupportEnabled && ServerSyncManager.loginVanishStates.containsKey(player.uniqueId)) {
-                doVanish = ServerSyncManager.loginVanishStates[player.uniqueId]!!
+            if (ServerSyncManager.crossServerSupportEnabled && loginVanishState != null) {
+                doVanish = loginVanishState
             } else {
-                if (Config.getValueOrDefault("keep-vanish-state", false) && VanishStateManager.savedVanishStates.containsKey(player.uniqueId)) {
-                    if (VanishStateManager.savedVanishStates[player.uniqueId]!!) {
-                        doVanish = true
-                        VanishStateManager.savedVanishStates.remove(player.uniqueId)
-                    }
+                if (Config.getValueOrDefault("keep-vanish-state", false) && VanishStateManager.savedVanishStates[player.uniqueId] == true) {
+                    VanishStateManager.savedVanishStates.remove(player.uniqueId)
+                    doVanish = true
                 } else if (Config.getValueOrDefault("vanish-on-join", false) || player.hasPermission(joinVanishedPermission)) {
                     doVanish = true
                 }
@@ -84,6 +96,10 @@ object VanishListener : Listener {
             }
         }
 
+        // never keep a leaving player in the vanished set, even if another plugin cancelled the unvanish
+        AdvancedVanishAPI.vanishedPlayers.remove(player.uniqueId)
+        VanishStateManager.interactEnabled.remove(player.uniqueId)
+
         if (!Config.getValueOrDefault("when-vanished.leave-messages", false)) {
             if (isVanished) {
                 event.quitMessage = null
@@ -92,7 +108,7 @@ object VanishListener : Listener {
     }
 
     @EventHandler
-    private fun onChat(event: AsyncPlayerChatEvent) =
+    private fun onChat(event: AsyncChatEvent) =
         genericEventCancel(
             event,
             event.player,
@@ -123,72 +139,90 @@ object VanishListener : Listener {
 
     @EventHandler
     private fun onInteract(event: PlayerInteractEvent) {
-        if (event.player.isVanished() && event.action == Action.RIGHT_CLICK_BLOCK) {
-            if (event.clickedBlock?.type == Material.CHEST || event.clickedBlock?.type == Material.TRAPPED_CHEST || event.clickedBlock?.type == Material.ENDER_CHEST || event.clickedBlock?.type!!.name.endsWith("SHULKER_BOX") || event.clickedBlock?.type!!.name == "BARREL") {
-                if (!Config.getValueOrDefault(
-                        "when-vanished.open-and-use-chests",
-                        false
-                    )
-                ) {
-                    val inventoryName: String
-                    val inventory = when (event.clickedBlock!!.type.name) {
-                        "CHEST", "TRAPPED_CHEST" -> {
-                            inventoryName = "Chest"
-                            (event.clickedBlock?.state as Chest).inventory
-                        }
-                        "BARREL" -> {
-                            inventoryName = "Barrel"
-                            (event.clickedBlock?.state as Barrel).inventory
-                        }
-                        "ENDER_CHEST" -> {
-                            inventoryName = "Enderchest"
-                            event.player.enderChest
-                        }
-                        else -> {
-                            inventoryName = "Shulker"
-                            (event.clickedBlock?.state as ShulkerBox).inventory
-                        }
-                    }
+        val player = event.player
+        val clickedBlock = event.clickedBlock
 
-                    if (inventoryName == "Enderchest") {
-                        event.player.openInventory(inventory)
-                    } else {
-                        val cloneInventory =
-                            Bukkit.createInventory(null, inventory.size, "AdvancedVanish $inventoryName")
-                                .also { it.contents = inventory.contents }
+        if (!player.isVanished()) return
 
-                        event.player.openInventory(cloneInventory)
-                    }
-
-                    event.player.sendConfigMessage("opening-container-silently", "%type%" to inventoryName.lowercase())
-                    event.isCancelled = true
-                }
-            }
-        } else if (!VanishStateManager.canInteract(event.player)) {
-            genericEventCancel(
-                event,
-                event.player,
-                "when-vanished.interact",
-                "",
-                true
-            )
+        if (event.action == Action.RIGHT_CLICK_BLOCK && clickedBlock != null && !player.isSneaking
+            && !Config.getValueOrDefault("when-vanished.open-and-use-chests", false)
+            && this.openContainerSilently(player, clickedBlock)
+        ) {
+            event.isCancelled = true
+            return
         }
+
+        genericEventCancel(
+            event,
+            event.player,
+            "when-vanished.interact",
+            "",
+            true
+        )
+    }
+
+    /** Opens a read-only copy of the container. Returns false if the block is not a supported container. */
+    private fun openContainerSilently(player: Player, block: org.bukkit.block.Block): Boolean {
+        val type = block.type
+
+        val inventoryName: String
+        val inventory = when {
+            type == Material.CHEST || type == Material.TRAPPED_CHEST -> {
+                inventoryName = "Chest"
+                (block.state as? Chest)?.inventory
+            }
+            type == Material.BARREL -> {
+                inventoryName = "Barrel"
+                (block.state as? Barrel)?.inventory
+            }
+            type == Material.ENDER_CHEST -> {
+                inventoryName = "Enderchest"
+                player.enderChest
+            }
+            type.name.endsWith("SHULKER_BOX") -> {
+                inventoryName = "Shulker"
+                (block.state as? ShulkerBox)?.inventory
+            }
+            else -> return false
+        } ?: return false
+
+        if (type == Material.ENDER_CHEST) {
+            player.openInventory(inventory)
+        } else {
+            val holder = SilentContainerHolder()
+            val cloneInventory = Bukkit.createInventory(holder, inventory.size, net.kyori.adventure.text.Component.text("AdvancedVanish $inventoryName"))
+            holder.backing = cloneInventory
+            cloneInventory.contents = inventory.contents
+
+            player.openInventory(cloneInventory)
+        }
+
+        player.sendConfigMessage("opening-container-silently", "%type%" to inventoryName.lowercase())
+        return true
     }
 
     @EventHandler
     private fun onInventoryClick(event: InventoryClickEvent) {
-        if (event.view.title.startsWith("AdvancedVanish ")) event.isCancelled = true
+        if (event.view.topInventory.holder is SilentContainerHolder) event.isCancelled = true
     }
 
     @EventHandler
-    private fun onPickUp(event: PlayerPickupItemEvent) =
+    private fun onInventoryDrag(event: InventoryDragEvent) {
+        if (event.view.topInventory.holder is SilentContainerHolder) event.isCancelled = true
+    }
+
+    @EventHandler
+    private fun onPickUp(event: EntityPickupItemEvent) {
+        val player = event.entity as? Player ?: return
+
         genericEventCancel(
             event,
-            event.player,
+            player,
             "when-vanished.pick-up-items",
             "",
             true
         )
+    }
 
     @EventHandler
     private fun onDrop(event: PlayerDropItemEvent) =
@@ -244,6 +278,9 @@ object VanishListener : Listener {
 
     @EventHandler
     private fun onDamage2(event: EntityDamageEvent) {
+        // damage from entities is handled (and configurable) in onDamage
+        if (event is EntityDamageByEntityEvent) return
+
         (event.entity as? Player)?.let { player ->
             if (player.isVanished()) {
                 event.isCancelled = true

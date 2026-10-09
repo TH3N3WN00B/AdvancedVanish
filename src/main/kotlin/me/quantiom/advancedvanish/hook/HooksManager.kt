@@ -1,6 +1,5 @@
 package me.quantiom.advancedvanish.hook
 
-import com.google.common.collect.Lists
 import me.quantiom.advancedvanish.AdvancedVanish
 import me.quantiom.advancedvanish.config.Config
 import me.quantiom.advancedvanish.hook.impl.*
@@ -9,11 +8,11 @@ import org.bukkit.event.HandlerList
 import java.util.logging.Level
 
 object HooksManager {
-    private val hooks: MutableList<IHook> = Lists.newArrayList()
+    private val hooks: MutableList<IHook> = mutableListOf()
 
     @Suppress("UNCHECKED_CAST")
     fun setupHooks() {
-        this.addHook("server-list", "ProtocolLib", "Server List", ::ServerListHook)
+        this.addHook("server-list", "packetevents", "Server List", ::ServerListHook)
         this.addHook("essentials", "Essentials", "Essentials", ::EssentialsHook)
         this.addHook("placeholders", "PlaceholderAPI", "Placeholders", ::PlaceHolderApiHook)
         this.addHook("actionbar", "ActionBarAPI", "Action Bar", ::ActionBarHook)
@@ -23,15 +22,28 @@ object HooksManager {
         this.addHook("libsdisguises", "LibsDisguises", "LibsDisguises", ::LibsDisguisesHook)
         this.addHook("playerparticles", "PlayerParticles", "PlayerParticles", ::PlayerParticlesHook)
 
-        this.hooks.forEach {
-            Bukkit.getServer().pluginManager.registerEvents(it, AdvancedVanish.instance!!)
-            it.onEnable()
+        // a misbehaving hook must never take the whole plugin down with it
+        this.hooks.removeAll { hook ->
+            try {
+                Bukkit.getServer().pluginManager.registerEvents(hook, AdvancedVanish.plugin)
+                hook.onEnable()
+                false
+            } catch (e: Throwable) {
+                AdvancedVanish.log(Level.SEVERE, "Unable to enable the ${hook.getID()} hook: ${e}")
+                HandlerList.unregisterAll(hook)
+                true
+            }
         }
     }
 
     fun disableHooks() {
         this.hooks.forEach {
-            it.onDisable()
+            try {
+                it.onDisable()
+            } catch (e: Throwable) {
+                AdvancedVanish.log(Level.WARNING, "Unable to disable the ${it.getID()} hook: ${e}")
+            }
+
             HandlerList.unregisterAll(it)
         }
         this.hooks.clear()
@@ -53,8 +65,12 @@ object HooksManager {
             if (!Bukkit.getPluginManager().isPluginEnabled(dependencyName) && dependencyName != "ActionBarAPI") {
                 AdvancedVanish.log(Level.INFO, "$dependencyName not found, not using the $hookName hook.")
             } else {
-                AdvancedVanish.log(Level.INFO, "Using $hookName hook.")
-                this.hooks.add(instanciator() as IHook)
+                try {
+                    this.hooks.add(instanciator() as IHook)
+                    AdvancedVanish.log(Level.INFO, "Using $hookName hook.")
+                } catch (e: Throwable) {
+                    AdvancedVanish.log(Level.SEVERE, "Unable to create the $hookName hook: $e")
+                }
             }
         }
     }
