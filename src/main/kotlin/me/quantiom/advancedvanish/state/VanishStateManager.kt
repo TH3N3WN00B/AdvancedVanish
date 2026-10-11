@@ -67,8 +67,7 @@ object VanishStateManager {
             val file = this.getFile()
             val tmp = File(file.parentFile, "vanishStates.json.tmp")
 
-            // only players that are actually vanished need to be remembered
-            val toSave = this.savedVanishStates.filterValues { it }
+            val toSave = HashMap(this.savedVanishStates)
 
             // write to a temp file first so a crash mid-write can never corrupt the existing states
             tmp.writeText(gson.toJson(toSave))
@@ -93,9 +92,9 @@ object VanishStateManager {
 
             loaded?.entries
                 ?.asSequence()
-                ?.filter { it.key != null && it.value == true }
+                ?.filter { it.key != null && it.value != null }
                 ?.take(MAX_ENTRIES)
-                ?.forEach { this.savedVanishStates.putIfAbsent(it.key, true) }
+                ?.forEach { this.savedVanishStates.putIfAbsent(it.key, it.value) }
         } catch (e: Exception) {
             AdvancedVanish.log(Level.WARNING, "Unable to load vanish states: ${e.message}")
         }

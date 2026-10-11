@@ -6,6 +6,7 @@ import com.github.retrooper.packetevents.event.simple.PacketStatusSendEvent
 import com.github.retrooper.packetevents.protocol.packettype.PacketType
 import com.github.retrooper.packetevents.wrapper.status.server.WrapperStatusServerResponse
 import com.google.gson.JsonArray
+import java.util.UUID
 import me.quantiom.advancedvanish.util.AdvancedVanishAPI
 import me.quantiom.advancedvanish.hook.IHook
 
@@ -28,14 +29,14 @@ class ServerListHook : IHook {
                 players.addProperty("online", (online - vanished.size).coerceAtLeast(0))
 
                 // remove vanished players from the player sample list
-                val vanishedIds = vanished.mapTo(HashSet(vanished.size * 2)) { it.toString() }
-
                 players.getAsJsonArray("sample")?.let { sample ->
-                    val newArray = JsonArray()
+                    val newArray = JsonArray(sample.size())
 
                     sample.forEach { element ->
                         val id = element.takeIf { it.isJsonObject }?.asJsonObject?.get("id")?.takeIf { it.isJsonPrimitive }?.asString
-                        if (id.isNullOrEmpty() || id !in vanishedIds) newArray.add(element)
+                        val uuid = id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+
+                        if (uuid == null || uuid !in vanished) newArray.add(element)
                     }
 
                     players.add("sample", newArray)

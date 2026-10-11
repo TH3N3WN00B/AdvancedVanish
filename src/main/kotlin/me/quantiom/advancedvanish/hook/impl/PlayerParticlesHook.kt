@@ -12,9 +12,13 @@ class PlayerParticlesHook : IHook {
     private val updateTask: BukkitRunnable =
         object : BukkitRunnable() {
             override fun run() {
-                AdvancedVanishAPI.vanishedPlayers
-                    .mapNotNull { PlayerParticlesAPI.getInstance().getPPlayer(it) }
-                    .forEach { it.activeParticles.clear() }
+                if (AdvancedVanishAPI.vanishedPlayers.isEmpty()) return
+
+                val api = PlayerParticlesAPI.getInstance()
+
+                for (uuid in AdvancedVanishAPI.vanishedPlayers) {
+                    api.getPPlayer(uuid)?.activeParticles?.clear()
+                }
             }
         }
 

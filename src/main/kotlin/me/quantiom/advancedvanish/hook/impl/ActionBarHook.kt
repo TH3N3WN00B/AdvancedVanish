@@ -6,7 +6,9 @@ import me.quantiom.advancedvanish.event.PlayerUnVanishEvent
 import me.quantiom.advancedvanish.event.PlayerVanishEvent
 import me.quantiom.advancedvanish.hook.IHook
 import me.quantiom.advancedvanish.util.AdvancedVanishAPI
+import me.quantiom.advancedvanish.util.color
 import me.quantiom.advancedvanish.util.renderMessage
+import net.kyori.adventure.text.Component
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -16,7 +18,9 @@ class ActionBarHook : IHook {
     private val updateTask: BukkitRunnable =
         object : BukkitRunnable() {
             override fun run() {
-                AdvancedVanishAPI.vanishedPlayers.mapNotNull(Bukkit::getPlayer).forEach(::sendActionBar)
+                for (uuid in AdvancedVanishAPI.vanishedPlayers) {
+                    Bukkit.getPlayer(uuid)?.let(::sendActionBar)
+                }
             }
         }
 
@@ -34,8 +38,25 @@ class ActionBarHook : IHook {
         this.sendActionBarStr(player, Config.getValueOrDefault("messages.action-bar", "<red>You are in vanish."))
     }
 
+    // last raw message without placeholders and its parsed form
+    private var cachedRaw: String? = null
+    private var cachedComponent: Component? = null
+
     private fun sendActionBarStr(player: Player, str: String) {
-        player.sendActionBar(player.renderMessage(str))
+        // only messages without `%` can't depend on the player, those can be parsed once and reused
+        if ('%' in str) {
+            player.sendActionBar(player.renderMessage(str))
+            return
+        }
+
+        var component = this.cachedComponent
+        if (component == null || this.cachedRaw != str) {
+            component = str.color()
+            this.cachedRaw = str
+            this.cachedComponent = component
+        }
+
+        player.sendActionBar(component)
     }
 
     @EventHandler

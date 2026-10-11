@@ -60,11 +60,19 @@ object VanishListener : Listener {
             if (ServerSyncManager.crossServerSupportEnabled && loginVanishState != null) {
                 doVanish = loginVanishState
             } else {
-                if (Config.getValueOrDefault("keep-vanish-state", false) && VanishStateManager.savedVanishStates[player.uniqueId] == true) {
+                // the state the player had when they left wins over `vanish-on-join`: someone who
+                // turned vanish off before leaving does not get vanished again just by rejoining.
+                // The join-vanished permission still always applies.
+                val savedState = if (Config.getValueOrDefault("keep-vanish-state", false)) {
                     VanishStateManager.savedVanishStates.remove(player.uniqueId)
-                    doVanish = true
-                } else if (Config.getValueOrDefault("vanish-on-join", false) || player.hasPermission(joinVanishedPermission)) {
-                    doVanish = true
+                } else {
+                    null
+                }
+
+                doVanish = when (savedState) {
+                    true -> true
+                    false -> player.hasPermission(joinVanishedPermission)
+                    null -> Config.getValueOrDefault("vanish-on-join", false) || player.hasPermission(joinVanishedPermission)
                 }
             }
         }
@@ -89,7 +97,9 @@ object VanishListener : Listener {
         val isVanished = player.isVanished()
 
         if (isVanished || player.hasPermission(Config.getValueOrDefault("permissions.vanish", "advancedvanish.vanish"))) {
-            VanishStateManager.savedVanishStates[player.uniqueId] = isVanished
+            if (Config.getValueOrDefault("keep-vanish-state", false)) {
+                VanishStateManager.savedVanishStates[player.uniqueId] = isVanished
+            }
 
             if (isVanished) {
                 AdvancedVanishAPI.unVanishPlayer(player, true)

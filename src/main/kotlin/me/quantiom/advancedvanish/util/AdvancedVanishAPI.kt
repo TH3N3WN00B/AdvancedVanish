@@ -89,9 +89,9 @@ object AdvancedVanishAPI {
             "advancedvanish.vanish"
         )
 
-        Bukkit.getOnlinePlayers()
-            .filter { it.uniqueId != player.uniqueId }
-            .forEach {
+        for (it in Bukkit.getOnlinePlayers()) {
+                if (it.uniqueId == player.uniqueId) continue
+
                 if (usePriority && it.hasPermission(vanishPermission)) {
                     val pPriority = PermissionsManager.handler?.getVanishPriority(it) ?: 0
 
@@ -101,7 +101,7 @@ object AdvancedVanishAPI {
                 } else {
                     it.hidePlayer(plugin, player)
                 }
-            }
+        }
 
         if (!onJoin && Config.getValueOrDefault("join-leave-messages.fake-leave-message-on-vanish.enable", false)) {
             val message = Config.getValueOrDefault(

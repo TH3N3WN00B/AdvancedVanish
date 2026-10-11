@@ -24,6 +24,25 @@ object Config {
 
     private var CONFIG_VERSION: Int? = null
 
+    // Event handlers query the config on every event; resolving a dotted path through
+    // YamlConfiguration each time is wasted work, so resolved values are memoised until the next reload.
+    private val NULL_VALUE = Any()
+
+    @PublishedApi
+    internal val valueCache = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    @PublishedApi
+    internal fun lookup(key: String): Any? {
+        val cached = this.valueCache[key]
+        if (cached != null) return if (cached === NULL_VALUE) null else cached
+
+        val config = this.savedConfig ?: return null
+        val value = config.get(key)
+
+        this.valueCache[key] = value ?: NULL_VALUE
+        return value
+    }
+
     // get config version from maven variable
     init {
         val p = Properties()
@@ -50,6 +69,7 @@ object Config {
         instance.let {
             it.reloadConfig()
             this.savedConfig = it.config
+            this.valueCache.clear()
         }
 
         // config-version check (a build without a readable version marker leaves the config untouched)
@@ -79,6 +99,7 @@ object Config {
                         (plugin.config as YamlConfiguration).options().width(120)
 
                         plugin.saveConfig()
+                        this.valueCache.clear()
                     }
                 }
             }
@@ -118,7 +139,7 @@ object Config {
     }
 
     inline fun <reified T> getValue(key: String): T? {
-        val value = this.savedConfig?.get(key)
+        val value = this.lookup(key)
 
         if (value is T) {
             return value
@@ -135,7 +156,7 @@ object Config {
     }
 
     inline fun <reified T> getValueOrDefault(key: String, default: T): T {
-        val value = this.savedConfig?.get(key)
+        val value = this.lookup(key)
 
         if (value is T) {
             return value
