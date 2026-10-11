@@ -130,7 +130,7 @@
         <dependency>
             <groupId>xyz.jpenilla</groupId>
             <artifactId>squaremap-api</artifactId>
-            <version>1.4.0</version>
+            <version>1.4.2</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
